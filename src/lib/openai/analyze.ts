@@ -5,7 +5,10 @@ import type {
   BodyShape,
 } from "@/types";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// 빌드 타임이 아닌 런타임에만 초기화 (Vercel env var 접근 보장)
+function getClient() {
+  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+}
 
 // ─── Body Shape Analysis ─────────────────────────────────────────────────────
 
@@ -35,6 +38,8 @@ Rules:
 export async function analyzeBodyShape(
   imageUrl: string
 ): Promise<BodyAnalysisResult> {
+  const openai = getClient();
+
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
     max_tokens: 256,
@@ -53,8 +58,7 @@ export async function analyzeBodyShape(
   const raw = response.choices[0]?.message?.content ?? "";
 
   try {
-    const parsed = JSON.parse(raw) as BodyAnalysisResult;
-    return parsed;
+    return JSON.parse(raw) as BodyAnalysisResult;
   } catch {
     throw new Error(`GPT returned unparseable JSON: ${raw}`);
   }
@@ -117,36 +121,18 @@ function buildExplanationPrompt(
 export async function generateRecommendation(
   analysis: BodyAnalysisResult
 ): Promise<{ recommendation: RecommendationPayload; explanation: string }> {
-  const [recommendResponse, explanationResponse] = await Promise.all([
-    openai.chat.completions.create({
-      model: "gpt-4o",
-      max_tokens: 512,
-      messages: [
-        { role: "system", content: RECOMMEND_SYSTEM_PROMPT },
-        { role: "user", content: buildRecommendPrompt(analysis) },
-      ],
-    }),
-    // We'll generate explanation after getting recommendation — placeholder parallel call
-    openai.chat.completions.create({
-      model: "gpt-4o",
-      max_tokens: 256,
-      messages: [
-        { role: "system", content: EXPLANATION_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: buildExplanationPrompt(analysis, {
-            recommendedFits: [],
-            tops: [],
-            bottoms: [],
-            outers: [],
-            avoid: [],
-          }),
-        },
-      ],
-    }),
-  ]);
+  const openai = getClient();
 
-  const recRaw = recommendResponse.choices[0]?.message?.content ?? "";
+  const recResponse = await openai.chat.completions.create({
+    model: "gpt-4o",
+    max_tokens: 512,
+    messages: [
+      { role: "system", content: RECOMMEND_SYSTEM_PROMPT },
+      { role: "user", content: buildRecommendPrompt(analysis) },
+    ],
+  });
+
+  const recRaw = recResponse.choices[0]?.message?.content ?? "";
   let recommendation: RecommendationPayload;
   try {
     recommendation = JSON.parse(recRaw) as RecommendationPayload;
@@ -154,16 +140,12 @@ export async function generateRecommendation(
     throw new Error(`GPT returned unparseable recommendation JSON: ${recRaw}`);
   }
 
-  // Re-generate explanation with actual recommendation data
   const explainResponse = await openai.chat.completions.create({
     model: "gpt-4o",
     max_tokens: 256,
     messages: [
       { role: "system", content: EXPLANATION_SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: buildExplanationPrompt(analysis, recommendation),
-      },
+      { role: "user", content: buildExplanationPrompt(analysis, recommendation) },
     ],
   });
 
